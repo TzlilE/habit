@@ -507,7 +507,7 @@ function EntryModal({ date, categoryId, entries, onClose, onAdd, onRemove, onUps
           <CigaretteForm date={date} cat={cat} list={dayList} onAdd={onAdd} onRemove={onRemove} />
         )}
         {cat.shape === "multi-food" && (
-          <FoodForm date={date} cat={cat} list={dayList} onAdd={onAdd} onRemove={onRemove} />
+          <FoodForm date={date} cat={cat} list={dayList} allEntries={entries} onAdd={onAdd} onRemove={onRemove} />
         )}
         {cat.shape === "multi-count" && (
           <CountForm date={date} cat={cat} list={dayList} onAdd={onAdd} onRemove={onRemove} />
@@ -536,6 +536,18 @@ const mStyles = {
   closeBtn: { background: "none", border: "none", color: INK_SOFT },
   label: { fontSize: 12, fontWeight: 600, color: INK_SOFT, marginBottom: 6, display: "block", textTransform: "uppercase", letterSpacing: "0.04em" },
   input: { width: "100%", padding: "10px 12px", borderRadius: 8, border: `1px solid ${RULE}`, background: "#fff", fontSize: 14, marginBottom: 14 },
+  suggestBox: {
+    position: "absolute", top: "calc(100% - 10px)", left: 0, right: 0, zIndex: 10,
+    background: "#fff", border: `1px solid ${RULE}`, borderRadius: 8,
+    boxShadow: "0 4px 14px rgba(51,43,37,0.12)", overflow: "hidden",
+  },
+  suggestItem: {
+    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+    width: "100%", padding: "9px 12px", background: "#fff", border: "none",
+    borderBottom: `1px solid ${RULE}`, textAlign: "left", fontSize: 13.5,
+  },
+  suggestDesc: { color: INK, fontWeight: 500 },
+  suggestMeta: { color: INK_SOFT, fontSize: 11, fontFamily: "'Space Mono', monospace", flexShrink: 0 },
   scaleRow: { display: "flex", gap: 6, marginBottom: 14 },
   scaleBtn: (active, color) => ({
     flex: 1, padding: "10px 0", borderRadius: 8, border: `1px solid ${active ? color : RULE}`,
@@ -604,15 +616,72 @@ function CigaretteForm({ date, cat, list, onAdd, onRemove }) {
 }
 
 /* --- Food form --- */
-function FoodForm({ date, cat, list, onAdd, onRemove }) {
+function FoodForm({ date, cat, list, allEntries, onAdd, onRemove }) {
   const [desc, setDesc] = useState("");
   const [mealType, setMealType] = useState(MEAL_TYPES[0]);
   const [calories, setCalories] = useState("");
   const [protein, setProtein] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Past meals for this category, most recent first, deduped by description.
+  const history = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (let i = allEntries.length - 1; i >= 0; i--) {
+      const e = allEntries[i];
+      if (e.categoryId !== cat.id || !e.description) continue;
+      const key = e.description.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(e);
+    }
+    return out;
+  }, [allEntries, cat.id]);
+
+  const suggestions = useMemo(() => {
+    const q = desc.trim().toLowerCase();
+    if (!q) return [];
+    return history.filter((e) => e.description.toLowerCase().includes(q)).slice(0, 6);
+  }, [desc, history]);
+
+  const pickSuggestion = (e) => {
+    setDesc(e.description);
+    setMealType(e.mealType || MEAL_TYPES[0]);
+    setShowSuggestions(false);
+  };
+
   return (
     <div>
       <label style={mStyles.label}>Meal</label>
-      <input style={mStyles.input} placeholder="what did you eat?" value={desc} onChange={(e) => setDesc(e.target.value)} />
+      <div style={{ position: "relative" }}>
+        <input
+          style={mStyles.input}
+          placeholder="what did you eat?"
+          value={desc}
+          onChange={(e) => { setDesc(e.target.value); setShowSuggestions(true); }}
+          onFocus={() => setShowSuggestions(true)}
+          onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+        />
+        {showSuggestions && suggestions.length > 0 && (
+          <div style={mStyles.suggestBox}>
+            {suggestions.map((s, i) => (
+              <button
+                key={s.id}
+                type="button"
+                style={{
+                  ...mStyles.suggestItem,
+                  ...(i === suggestions.length - 1 ? { borderBottom: "none" } : {}),
+                }}
+                onMouseDown={(ev) => ev.preventDefault()}
+                onClick={() => pickSuggestion(s)}
+              >
+                <span style={mStyles.suggestDesc}>{s.description}</span>
+                <span style={mStyles.suggestMeta}>{s.mealType}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <label style={mStyles.label}>Type</label>
       <div style={mStyles.pillRow}>
         {MEAL_TYPES.map((t) => (
