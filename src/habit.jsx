@@ -17,19 +17,22 @@ const ACCENT = "#6B4C57";
 
 const CATEGORIES = [
   { id: "cigarette", name: "Cigarette", short: "Cig", icon: "\u{1F6AC}", color: "#B84B32", shape: "multi-detail" },
+  { id: "water", name: "Water", short: "H\u2082O", icon: "\u{1F4A7}", color: "#2E8C94", shape: "water-counter", unit: "ml" },
   { id: "food", name: "Food", short: "Food", icon: "\u{1F37D}\uFE0F", color: "#C98A2B", shape: "multi-food" },
   { id: "coffee", name: "Coffee", short: "Cof", icon: "\u2615", color: "#8A5A34", shape: "multi-count" },
-  { id: "walk", name: "Walk", short: "Walk", icon: "\u{1F6B6}", color: "#7A8B3E", shape: "daily-value", unit: "steps" },
-  { id: "water", name: "Water", short: "H\u2082O", icon: "\u{1F4A7}", color: "#2E8C94", shape: "daily-value", unit: "L" },
-  { id: "sleep", name: "Sleep", short: "Sleep", icon: "\u{1F634}", color: "#3E6B9C", shape: "daily-value", unit: "h" },
   { id: "workout", name: "Workout", short: "Move", icon: "\u{1F3CB}\uFE0F", color: "#3E8B5C", shape: "daily-bool-type" },
   { id: "books", name: "Reading", short: "Read", icon: "\u{1F4D6}", color: "#8C4E8A", shape: "daily-bool" },
   { id: "meditation", name: "Meditation", short: "Med", icon: "\u{1F9D8}", color: "#5B4E9C", shape: "daily-bool" },
-  { id: "kindness", name: "Kindness", short: "Kind", icon: "\u{1F49B}", color: "#B5497A", shape: "daily-bool" },
+  { id: "walk", name: "Walk", short: "Walk", icon: "\u{1F6B6}", color: "#7A8B3E", shape: "daily-value", unit: "steps" },
+  { id: "sleep", name: "Sleep", short: "Sleep", icon: "\u{1F634}", color: "#3E6B9C", shape: "daily-value", unit: "h" },
 ];
+
+const WATER_GOAL_ML = 2100;
+const WATER_STEP_ML = 250;
 
 const WORKOUT_TYPES = ["Pilates", "Walking", "Running", "Strength", "Other"];
 const MEAL_TYPES = ["Breakfast", "Lunch", "Dinner", "Snack"];
+const CIGARETTE_AMOUNTS = [{ label: "Whole", value: 1 }, { label: "Half", value: 0.5 }];
 const WEEKDAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
 
 /* ------------------------------------------------------------------ */
@@ -69,6 +72,18 @@ function niceDay(dateStr) {
   const d = new Date(dateStr + "T00:00:00");
   return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 }
+function weekRange(sunday) {
+  return { days: weekDates(sunday).map(fmtDate) };
+}
+function monthRange(year, month) {
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const days = Array.from({ length: daysInMonth }, (_, i) => fmtDate(new Date(year, month, i + 1)));
+  return { days, label: new Date(year, month, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" }) };
+}
+function shiftMonthYM(y, m, n) {
+  const d = new Date(y, m + n, 1);
+  return { y: d.getFullYear(), m: d.getMonth() };
+}
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
@@ -105,8 +120,31 @@ function fillLevel(entries, date, cat) {
   if (cat.shape === "multi-detail" || cat.shape === "multi-food" || cat.shape === "multi-count") {
     return Math.min(1, 0.4 + es.length * 0.22);
   }
-  // daily-value, daily-bool, daily-bool-type: presence only
+  // daily-value, daily-bool, daily-bool-type, water-counter: presence only
   return 1;
+}
+
+// Aggregates one category's entries over a set of date strings.
+function rollupFor(cat, entries, days) {
+  const set = new Set(days);
+  const es = entries.filter((e) => e.categoryId === cat.id && set.has(e.date));
+  if (cat.id === "cigarette") {
+    const trips = es.length;
+    const total = es.reduce((s, e) => s + (typeof e.amount === "number" ? e.amount : 1), 0);
+    return { trips, total };
+  }
+  if (cat.shape.startsWith("multi")) {
+    return { count: es.length };
+  }
+  if (cat.shape === "daily-value" || cat.shape === "water-counter") {
+    const vals = es.map((e) => e.value).filter((v) => typeof v === "number");
+    return { avg: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null };
+  }
+  return { daysDone: new Set(es.map((e) => e.date)).size };
+}
+function fmtNum(n) {
+  if (n == null) return "—";
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -128,6 +166,63 @@ async function saveEntries(entries) {
     /* best effort */
   }
 }
+async function loadWeeklyNotes() {
+  try {
+    const raw = localStorage.getItem("weeklyNotes");
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+async function saveWeeklyNotes(notes) {
+  try {
+    localStorage.setItem("weeklyNotes", JSON.stringify(notes));
+  } catch {
+    /* best effort */
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Google Sheets backup sync                                          */
+/* ------------------------------------------------------------------ */
+
+const LS_SCRIPT_URL = "habit_script_url";
+const LS_SECRET_KEY = "habit_secret_key";
+
+async function pullBackend(scriptUrl, secretKey) {
+  const query = `action=pull&key=${encodeURIComponent(secretKey)}`;
+  const res = await fetch(`${scriptUrl}?${query}`, { method: "GET" });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+async function pushBackend(scriptUrl, secretKey, payload) {
+  const body = JSON.stringify({ action: "push", key: secretKey, ...payload });
+  const res = await fetch(scriptUrl, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body,
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
+// Local entries win on id conflicts (never lose an un-synced local edit);
+// anything present only on the remote (e.g. from another device) is added in.
+function mergeEntries(local, remote) {
+  const localIds = new Set(local.map((e) => e.id));
+  const extra = remote.filter((e) => !localIds.has(e.id));
+  return [...local, ...extra];
+}
+// Weekly notes carry an updatedAt, so the newer edit wins per week.
+function mergeWeeklyNotes(local, remote) {
+  const merged = { ...local };
+  for (const [k, v] of Object.entries(remote)) {
+    if (!merged[k] || (v.updatedAt || 0) > (merged[k].updatedAt || 0)) merged[k] = v;
+  }
+  return merged;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Root component                                                     */
@@ -135,14 +230,103 @@ async function saveEntries(entries) {
 
 export default function HabitDiary() {
   const [entries, setEntries] = useState([]);
+  const [weeklyNotes, setWeeklyNotes] = useState({});
   const [loaded, setLoaded] = useState(false);
+  const [initializing, setInitializing] = useState(true);
   const [tab, setTab] = useState("diary");
   const [weekStart, setWeekStart] = useState(() => sundayOf(new Date()));
   const [selectedDay, setSelectedDay] = useState(todayStr());
   const [modal, setModal] = useState(null); // { date, categoryId }
 
+  const [syncConfig, setSyncConfig] = useState(() => {
+    const url = localStorage.getItem(LS_SCRIPT_URL);
+    const key = localStorage.getItem(LS_SECRET_KEY);
+    return url && key ? { url, key } : null;
+  });
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | synced | error
+  const [syncError, setSyncError] = useState(null);
+
+  const connectAndMerge = useCallback(async (config) => {
+    setSyncStatus("syncing");
+    setSyncError(null);
+    try {
+      const remote = await pullBackend(config.url, config.key);
+      setEntries((prev) => {
+        const merged = mergeEntries(prev, remote.entries || []);
+        saveEntries(merged);
+        return merged;
+      });
+      setWeeklyNotes((prev) => {
+        const merged = mergeWeeklyNotes(prev, remote.weeklyNotes || {});
+        saveWeeklyNotes(merged);
+        return merged;
+      });
+      setSyncStatus("synced");
+    } catch (err) {
+      setSyncStatus("error");
+      setSyncError(err.message || "Couldn't reach your sheet.");
+    }
+  }, []);
+
   useEffect(() => {
-    loadEntries().then((e) => { setEntries(e); setLoaded(true); });
+    let cancelled = false;
+    (async () => {
+      const [e, n] = await Promise.all([loadEntries(), loadWeeklyNotes()]);
+      if (cancelled) return;
+      setEntries(e);
+      setWeeklyNotes(n);
+      setLoaded(true);
+      if (syncConfig) await connectAndMerge(syncConfig);
+      if (!cancelled) setInitializing(false);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Debounced backup push whenever local data changes, once initial load/merge is done.
+  useEffect(() => {
+    if (initializing || !syncConfig) return;
+    setSyncStatus("syncing");
+    const t = setTimeout(() => {
+      pushBackend(syncConfig.url, syncConfig.key, { entries, weeklyNotes })
+        .then(() => setSyncStatus("synced"))
+        .catch((err) => {
+          setSyncStatus("error");
+          setSyncError(err.message || "Couldn't reach your sheet.");
+        });
+    }, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries, weeklyNotes, syncConfig, initializing]);
+
+  const saveSyncConfig = useCallback((url, key) => {
+    localStorage.setItem(LS_SCRIPT_URL, url);
+    localStorage.setItem(LS_SECRET_KEY, key);
+    const config = { url, key };
+    setSyncConfig(config);
+    setSyncModalOpen(false);
+    connectAndMerge(config);
+  }, [connectAndMerge]);
+
+  const disconnectSync = useCallback(() => {
+    localStorage.removeItem(LS_SCRIPT_URL);
+    localStorage.removeItem(LS_SECRET_KEY);
+    setSyncConfig(null);
+    setSyncStatus("idle");
+    setSyncError(null);
+  }, []);
+
+  const syncNow = useCallback(() => {
+    if (syncConfig) connectAndMerge(syncConfig);
+  }, [syncConfig, connectAndMerge]);
+
+  const saveWeekNote = useCallback((weekKey, text) => {
+    setWeeklyNotes((prev) => {
+      const next = { ...prev, [weekKey]: { text, updatedAt: Date.now() } };
+      saveWeeklyNotes(next);
+      return next;
+    });
   }, []);
 
   const persist = useCallback((next) => {
@@ -219,11 +403,23 @@ export default function HabitDiary() {
           selectedDay={selectedDay}
           setSelectedDay={setSelectedDay}
           onOpenCell={(date, categoryId) => setModal({ date, categoryId })}
+          weeklyNotes={weeklyNotes}
+          onSaveWeekNote={saveWeekNote}
         />
       ) : tab === "year" ? (
         <YearView entries={entries} />
       ) : (
-        <InsightsView entries={entries} />
+        <InsightsView
+          entries={entries}
+          weeklyNotes={weeklyNotes}
+          onSaveWeekNote={saveWeekNote}
+          syncConfig={syncConfig}
+          syncStatus={syncStatus}
+          syncError={syncError}
+          onOpenSyncSetup={() => setSyncModalOpen(true)}
+          onSyncNow={syncNow}
+          onDisconnectSync={disconnectSync}
+        />
       )}
 
       {modal && (
@@ -237,6 +433,10 @@ export default function HabitDiary() {
           onUpsertDaily={upsertDaily}
           onClearDaily={clearDaily}
         />
+      )}
+
+      {syncModalOpen && (
+        <SyncSetupModal onClose={() => setSyncModalOpen(false)} onSave={saveSyncConfig} />
       )}
     </div>
   );
@@ -313,7 +513,7 @@ const styles = {
 
 function DiaryView({
   entries, days, weekStart, isCurrentWeek, onPrevWeek, onNextWeek, onToday,
-  selectedDay, setSelectedDay, onOpenCell,
+  selectedDay, setSelectedDay, onOpenCell, weeklyNotes, onSaveWeekNote,
 }) {
   const todaysStr = todayStr();
 
@@ -392,6 +592,8 @@ function DiaryView({
       </div>
 
       <DaySummary date={selectedDay} entries={entries} onOpenCell={onOpenCell} />
+
+      <WeekReflection weekStart={weekStart} weeklyNotes={weeklyNotes} onSave={onSaveWeekNote} />
     </div>
   );
 }
@@ -437,7 +639,7 @@ function DaySummary({ date, entries, onOpenCell }) {
       text = parts.length ? `${names} · ${parts.join(" · ")}` : names;
     } else if (cat.shape === "multi-count") {
       text = `${es.length} cup${es.length > 1 ? "s" : ""}`;
-    } else if (cat.shape === "daily-value") {
+    } else if (cat.shape === "daily-value" || cat.shape === "water-counter") {
       text = `${es[0].value} ${cat.unit}`;
     } else if (cat.shape === "daily-bool-type") {
       text = es[0].workoutType || "done";
@@ -484,6 +686,46 @@ const dsStyles = {
 };
 
 /* ------------------------------------------------------------------ */
+/*  Weekly reflection note                                             */
+/* ------------------------------------------------------------------ */
+
+function WeekReflection({ weekStart, weeklyNotes, onSave }) {
+  const key = fmtDate(weekStart);
+  const saved = weeklyNotes[key]?.text || "";
+  const [text, setText] = useState(saved);
+
+  useEffect(() => { setText(saved); }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const commit = () => {
+    if (text !== saved) onSave(key, text);
+  };
+
+  return (
+    <div style={wrStyles.wrap}>
+      <div style={wrStyles.heading}>How did this week feel?</div>
+      <textarea
+        style={wrStyles.textarea}
+        placeholder="A line or two &mdash; whatever stands out about this week..."
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        rows={3}
+      />
+      <div style={wrStyles.hint}>Saves automatically when you tap away.</div>
+    </div>
+  );
+}
+const wrStyles = {
+  wrap: { marginTop: 14, padding: 16, background: "rgba(255,255,255,0.5)", border: `1px solid ${RULE}`, borderRadius: 10 },
+  heading: { fontFamily: "'Fraunces', serif", fontSize: 15, fontWeight: 600, marginBottom: 10 },
+  textarea: {
+    width: "100%", padding: "10px 12px", borderRadius: 8, border: `1px solid ${RULE}`,
+    background: "#fff", fontSize: 13.5, fontFamily: "'Inter', sans-serif", resize: "vertical",
+  },
+  hint: { fontSize: 11, color: INK_SOFT, fontStyle: "italic", marginTop: 6 },
+};
+
+/* ------------------------------------------------------------------ */
 /*  Entry modal                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -504,7 +746,7 @@ function EntryModal({ date, categoryId, entries, onClose, onAdd, onRemove, onUps
         </div>
 
         {cat.shape === "multi-detail" && (
-          <CigaretteForm date={date} cat={cat} list={dayList} onAdd={onAdd} onRemove={onRemove} />
+          <CigaretteForm date={date} cat={cat} list={dayList} allEntries={entries} onAdd={onAdd} onRemove={onRemove} />
         )}
         {cat.shape === "multi-food" && (
           <FoodForm date={date} cat={cat} list={dayList} allEntries={entries} onAdd={onAdd} onRemove={onRemove} />
@@ -515,12 +757,56 @@ function EntryModal({ date, categoryId, entries, onClose, onAdd, onRemove, onUps
         {cat.shape === "daily-value" && (
           <ValueForm date={date} cat={cat} list={dayList} onSave={onUpsertDaily} onClear={onClearDaily} onClose={onClose} />
         )}
+        {cat.shape === "water-counter" && (
+          <WaterCounterForm date={date} cat={cat} list={dayList} onSave={onUpsertDaily} onClear={onClearDaily} />
+        )}
         {cat.shape === "daily-bool-type" && (
           <WorkoutForm date={date} cat={cat} list={dayList} onSave={onUpsertDaily} onClear={onClearDaily} onClose={onClose} />
         )}
         {cat.shape === "daily-bool" && (
           <BoolForm date={date} cat={cat} list={dayList} onSave={onUpsertDaily} onClear={onClearDaily} onClose={onClose} />
         )}
+      </div>
+    </div>
+  );
+}
+
+/* --- Google Sheets backup setup --- */
+function SyncSetupModal({ onClose, onSave }) {
+  const [url, setUrl] = useState("");
+  const [key, setKey] = useState("");
+  return (
+    <div style={mStyles.backdrop} onClick={onClose}>
+      <div style={mStyles.sheet} onClick={(e) => e.stopPropagation()}>
+        <div style={mStyles.headRow}>
+          <div style={mStyles.headTitle}>Set up backup</div>
+          <button style={mStyles.closeBtn} onClick={onClose}><X size={18} /></button>
+        </div>
+        <p style={{ fontSize: 12.5, color: INK_SOFT, marginTop: 0, marginBottom: 16 }}>
+          Deploy the Apps Script in <code>apps-script/Code.gs</code> to a Google Sheet, set its <code>SECRET_KEY</code>,
+          then paste the deployed Web App URL and that key below. They&rsquo;re stored only in this browser.
+        </p>
+        <label style={mStyles.label}>Apps Script Web App URL</label>
+        <input
+          style={mStyles.input}
+          placeholder="https://script.google.com/macros/s/.../exec"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+        <label style={mStyles.label}>Secret key</label>
+        <input
+          style={mStyles.input}
+          placeholder="the SECRET_KEY from your script"
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+        />
+        <button
+          style={mStyles.primaryBtn(ACCENT)}
+          disabled={!url.trim() || !key.trim()}
+          onClick={() => onSave(url.trim(), key.trim())}
+        >
+          Save and sync
+        </button>
       </div>
     </div>
   );
@@ -572,11 +858,40 @@ const mStyles = {
 };
 
 /* --- Cigarette form --- */
-function CigaretteForm({ date, cat, list, onAdd, onRemove }) {
+function CigaretteForm({ date, cat, list, allEntries, onAdd, onRemove }) {
   const [hour, setHour] = useState(nowHHMM());
   const [craving, setCraving] = useState(2);
   const [enjoyment, setEnjoyment] = useState(2);
+  const [amount, setAmount] = useState(1);
   const [note, setNote] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Past "why" notes for this category, most recent first, deduped.
+  const history = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (let i = allEntries.length - 1; i >= 0; i--) {
+      const e = allEntries[i];
+      if (e.categoryId !== cat.id || !e.note) continue;
+      const key = e.note.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(e);
+    }
+    return out;
+  }, [allEntries, cat.id]);
+
+  const suggestions = useMemo(() => {
+    const q = note.trim().toLowerCase();
+    if (!q) return [];
+    return history.filter((e) => e.note.toLowerCase().includes(q)).slice(0, 6);
+  }, [note, history]);
+
+  const pickSuggestion = (e) => {
+    setNote(e.note);
+    setShowSuggestions(false);
+  };
+
   return (
     <div>
       <label style={mStyles.label}>Time</label>
@@ -593,23 +908,51 @@ function CigaretteForm({ date, cat, list, onAdd, onRemove }) {
           <button key={n} style={mStyles.scaleBtn(enjoyment === n, cat.color)} onClick={() => setEnjoyment(n)}>{n}</button>
         ))}
       </div>
+      <label style={mStyles.label}>How much of it?</label>
+      <div style={mStyles.pillRow}>
+        {CIGARETTE_AMOUNTS.map((a) => (
+          <button key={a.label} style={mStyles.pill(amount === a.value, cat.color)} onClick={() => setAmount(a.value)}>{a.label}</button>
+        ))}
+      </div>
       <label style={mStyles.label}>Why? (optional)</label>
-      <input
-        style={mStyles.input}
-        placeholder="in the car, with friends, morning coffee..."
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-      />
+      <div style={{ position: "relative" }}>
+        <input
+          style={mStyles.input}
+          placeholder="in the car, with friends, morning coffee..."
+          value={note}
+          onChange={(e) => { setNote(e.target.value); setShowSuggestions(true); }}
+          onFocus={() => setShowSuggestions(true)}
+          onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+        />
+        {showSuggestions && suggestions.length > 0 && (
+          <div style={mStyles.suggestBox}>
+            {suggestions.map((s, i) => (
+              <button
+                key={s.id}
+                type="button"
+                style={{
+                  ...mStyles.suggestItem,
+                  ...(i === suggestions.length - 1 ? { borderBottom: "none" } : {}),
+                }}
+                onMouseDown={(ev) => ev.preventDefault()}
+                onClick={() => pickSuggestion(s)}
+              >
+                <span style={mStyles.suggestDesc}>{s.note}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <button
         style={mStyles.primaryBtn(cat.color)}
-        onClick={() => { onAdd({ date, categoryId: cat.id, hour, craving, enjoyment, note: note.trim() }); setNote(""); }}
+        onClick={() => { onAdd({ date, categoryId: cat.id, hour, craving, enjoyment, amount, note: note.trim() }); setNote(""); setAmount(1); }}
       >
         <Plus size={15} /> Add cigarette
       </button>
       <EntryList
         list={list}
         onRemove={onRemove}
-        render={(e) => `${e.hour || "--:--"} \u00b7 craving ${e.craving} \u00b7 enjoyed ${e.enjoyment}${e.note ? ` \u00b7 ${e.note}` : ""}`}
+        render={(e) => `${e.hour || "--:--"} \u00b7 ${e.amount === 0.5 ? "half" : "whole"} \u00b7 craving ${e.craving} \u00b7 enjoyed ${e.enjoyment}${e.note ? ` \u00b7 ${e.note}` : ""}`}
       />
     </div>
   );
@@ -751,7 +1094,7 @@ function CountForm({ date, cat, list, onAdd, onRemove }) {
   );
 }
 
-/* --- Daily numeric value form (walk / water / sleep) --- */
+/* --- Daily numeric value form (walk / sleep) --- */
 function ValueForm({ date, cat, list, onSave, onClear, onClose }) {
   const existing = list[0];
   const [val, setVal] = useState(existing ? String(existing.value) : "");
@@ -762,7 +1105,7 @@ function ValueForm({ date, cat, list, onSave, onClear, onClose }) {
         style={mStyles.input}
         type="number"
         inputMode="decimal"
-        placeholder={`e.g. ${cat.unit === "steps" ? "6500" : cat.unit === "L" ? "1.5" : "7.5"}`}
+        placeholder={`e.g. ${cat.unit === "steps" ? "6500" : "7.5"}`}
         value={val}
         onChange={(e) => setVal(e.target.value)}
       />
@@ -781,6 +1124,61 @@ function ValueForm({ date, cat, list, onSave, onClear, onClose }) {
     </div>
   );
 }
+
+/* --- Water tap counter --- */
+function WaterCounterForm({ date, cat, list, onSave, onClear }) {
+  const existing = list[0];
+  const total = existing ? existing.value : 0;
+
+  const adjust = (delta) => {
+    const next = Math.max(0, total + delta);
+    if (next === 0) {
+      onClear(date, cat.id);
+    } else {
+      onSave(date, cat.id, { value: next });
+    }
+  };
+
+  return (
+    <div>
+      <div style={wStyles.wrap}>
+        <button
+          style={{ ...wStyles.stepBtn(cat.color), ...(total <= 0 ? wStyles.stepBtnDisabled : {}) }}
+          onClick={() => adjust(-WATER_STEP_ML)}
+          disabled={total <= 0}
+          aria-label="Remove 250 ml"
+        >
+          &minus;
+        </button>
+        <div style={wStyles.readout}>
+          <div style={wStyles.total}>{total} ml</div>
+          <div style={wStyles.goal}>/ {WATER_GOAL_ML} ml</div>
+        </div>
+        <button
+          style={wStyles.stepBtn(cat.color)}
+          onClick={() => adjust(WATER_STEP_ML)}
+          aria-label="Add 250 ml"
+        >
+          +
+        </button>
+      </div>
+      <p style={wStyles.hint}>Each tap adjusts by {WATER_STEP_ML} ml and saves right away.</p>
+    </div>
+  );
+}
+const wStyles = {
+  wrap: { display: "flex", alignItems: "center", justifyContent: "center", gap: 22, padding: "10px 0 6px" },
+  stepBtn: (color) => ({
+    width: 48, height: 48, borderRadius: "50%", border: "none",
+    background: color, color: "#fff", fontSize: 26, fontWeight: 700,
+    display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1,
+  }),
+  stepBtnDisabled: { opacity: 0.35 },
+  readout: { textAlign: "center", minWidth: 110 },
+  total: { fontFamily: "'Space Mono', monospace", fontSize: 26, fontWeight: 700 },
+  goal: { fontSize: 12.5, color: INK_SOFT, marginTop: 2 },
+  hint: { fontSize: 11.5, color: INK_SOFT, fontStyle: "italic", textAlign: "center", marginTop: 10 },
+};
 
 /* --- Workout (bool + type) --- */
 function WorkoutForm({ date, cat, list, onSave, onClear, onClose }) {
@@ -829,7 +1227,6 @@ function BoolForm({ date, cat, list, onSave, onClear, onClose }) {
 function boolPrompt(id) {
   if (id === "books") return "Did you read today?";
   if (id === "meditation") return "Did you meditate today?";
-  if (id === "kindness") return "Did you do something kind for someone else today?";
   return "Mark today?";
 }
 
@@ -959,13 +1356,30 @@ const yStyles = {
 /*  Insights view                                                      */
 /* ------------------------------------------------------------------ */
 
-function InsightsView({ entries }) {
+function InsightsView({
+  entries, weeklyNotes, onSaveWeekNote,
+  syncConfig, syncStatus, syncError, onOpenSyncSetup, onSyncNow, onDisconnectSync,
+}) {
   const last14 = useMemo(() => {
     return Array.from({ length: 14 }, (_, i) => fmtDate(addDays(new Date(), -13 + i)));
   }, []);
 
+  const [period, setPeriod] = useState("week");
+  const now = new Date();
+  const curWeek = useMemo(() => weekRange(sundayOf(now)), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const prevWeek = useMemo(() => weekRange(addDays(sundayOf(now), -7)), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const curMonth = useMemo(() => monthRange(now.getFullYear(), now.getMonth()), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const prevMonth = useMemo(() => {
+    const p = shiftMonthYM(now.getFullYear(), now.getMonth(), -1);
+    return monthRange(p.y, p.m);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const cur = period === "week" ? curWeek : curMonth;
+  const prev = period === "week" ? prevWeek : prevMonth;
+  const periodLabel = period === "week" ? "week" : "month";
+
   const boolCats = CATEGORIES.filter((c) => c.shape === "daily-bool" || c.shape === "daily-bool-type");
-  const valueCats = CATEGORIES.filter((c) => c.shape === "daily-value");
+  const valueCats = CATEGORIES.filter((c) => c.shape === "daily-value" || c.shape === "water-counter");
   const multiCats = CATEGORIES.filter((c) => c.shape.startsWith("multi"));
 
   return (
@@ -976,6 +1390,25 @@ function InsightsView({ entries }) {
           <StreakCard key={cat.id} cat={cat} entries={entries} />
         ))}
       </div>
+
+      <SectionLabel>Totals</SectionLabel>
+      <PeriodToggle period={period} setPeriod={setPeriod} />
+      {period === "month" && (
+        <div style={iStyles.periodCaption}>{curMonth.label} vs {prevMonth.label}</div>
+      )}
+      <div style={iStyles.compGrid}>
+        {CATEGORIES.map((cat) => (
+          <ComparisonCard
+            key={cat.id}
+            cat={cat}
+            cur={rollupFor(cat, entries, cur.days)}
+            prev={rollupFor(cat, entries, prev.days)}
+            periodLabel={periodLabel}
+          />
+        ))}
+      </div>
+
+      <WeekReflection weekStart={sundayOf(now)} weeklyNotes={weeklyNotes} onSave={onSaveWeekNote} />
 
       <SectionLabel>Daily numbers, last 14 days</SectionLabel>
       {valueCats.map((cat) => (
@@ -1000,12 +1433,78 @@ function InsightsView({ entries }) {
       {CATEGORIES.find((c) => c.id === "cigarette") && (
         <CigaretteInsight entries={entries} last14={last14} />
       )}
+
+      <SectionLabel>Backup</SectionLabel>
+      <BackupCard
+        syncConfig={syncConfig}
+        syncStatus={syncStatus}
+        syncError={syncError}
+        onOpenSetup={onOpenSyncSetup}
+        onSyncNow={onSyncNow}
+        onDisconnect={onDisconnectSync}
+      />
     </div>
   );
 }
 
 function SectionLabel({ children }) {
   return <div style={iStyles.sectionLabel}>{children}</div>;
+}
+
+function PeriodToggle({ period, setPeriod }) {
+  return (
+    <div style={iStyles.toggleRow}>
+      {[["week", "This Week"], ["month", "This Month"]].map(([key, label]) => (
+        <button
+          key={key}
+          onClick={() => setPeriod(key)}
+          style={{ ...iStyles.toggleBtn, ...(period === key ? iStyles.toggleBtnActive : {}) }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ComparisonCard({ cat, cur, prev, periodLabel }) {
+  let curPrimary, prevPrimary, line;
+  let extraLine = null;
+
+  if (cat.id === "cigarette") {
+    curPrimary = cur.trips;
+    prevPrimary = prev.trips;
+    line = `${cur.trips} trip${cur.trips === 1 ? "" : "s"} this ${periodLabel} vs ${prev.trips} last ${periodLabel}`;
+    extraLine = `${fmtNum(cur.total)} cigarette${cur.total === 1 ? "" : "s"} total this ${periodLabel}`;
+  } else if (cat.shape.startsWith("multi")) {
+    curPrimary = cur.count;
+    prevPrimary = prev.count;
+    line = `${cur.count} this ${periodLabel} vs ${prev.count} last ${periodLabel}`;
+  } else if (cat.shape === "daily-value" || cat.shape === "water-counter") {
+    curPrimary = cur.avg;
+    prevPrimary = prev.avg;
+    line = `${fmtNum(cur.avg)} avg ${cat.unit} this ${periodLabel} vs ${fmtNum(prev.avg)} last ${periodLabel}`;
+  } else {
+    curPrimary = cur.daysDone;
+    prevPrimary = prev.daysDone;
+    line = `${cur.daysDone} days this ${periodLabel} vs ${prev.daysDone} last ${periodLabel}`;
+  }
+
+  const arrow = curPrimary == null || prevPrimary == null || curPrimary === prevPrimary
+    ? "–"
+    : curPrimary > prevPrimary ? "▲" : "▼";
+
+  return (
+    <div style={iStyles.compCard}>
+      <div style={iStyles.compHead}>
+        <span style={{ ...yStyles.legendDot, background: cat.color }} />
+        <span style={iStyles.chartTitle}>{cat.name}</span>
+        <span style={iStyles.compArrow}>{arrow}</span>
+      </div>
+      <div style={iStyles.compLine}>{line}</div>
+      {extraLine && <div style={iStyles.compLineSub}>{extraLine}</div>}
+    </div>
+  );
 }
 
 function StreakCard({ cat, entries }) {
@@ -1074,6 +1573,35 @@ function CigaretteInsight({ entries, last14 }) {
   );
 }
 
+function BackupCard({ syncConfig, syncStatus, syncError, onOpenSetup, onSyncNow, onDisconnect }) {
+  if (!syncConfig) {
+    return (
+      <div style={iStyles.compCard}>
+        <div style={iStyles.chartTitle}>Your data lives only in this browser.</div>
+        <p style={{ fontSize: 12.5, color: INK_SOFT, margin: "6px 0 10px" }}>
+          Back it up to a Google Sheet so it&rsquo;s safe and available on another device.
+        </p>
+        <button style={{ ...mStyles.secondaryBtn, marginTop: 0 }} onClick={onOpenSetup}>Set up backup</button>
+      </div>
+    );
+  }
+  const statusText = syncStatus === "syncing" ? "Syncing…"
+    : syncStatus === "error" ? `Sync failed${syncError ? `: ${syncError}` : ""}`
+    : "Synced";
+  return (
+    <div style={iStyles.compCard}>
+      <div style={iStyles.chartTitle}>Google Sheets backup</div>
+      <p style={{ fontSize: 12.5, color: syncStatus === "error" ? "#B84B32" : INK_SOFT, margin: "6px 0 10px" }}>
+        {statusText}
+      </p>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button style={{ ...mStyles.secondaryBtn, marginTop: 0, flex: 1 }} onClick={onSyncNow}>Sync now</button>
+        <button style={{ ...mStyles.secondaryBtn, marginTop: 0, flex: 1 }} onClick={onDisconnect}>Disconnect</button>
+      </div>
+    </div>
+  );
+}
+
 const iStyles = {
   sectionLabel: { fontFamily: "'Fraunces', serif", fontSize: 14, fontWeight: 600, margin: "22px 2px 10px", color: ACCENT },
   streakGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 },
@@ -1088,4 +1616,17 @@ const iStyles = {
   pairCard: { flex: 1, textAlign: "center", background: "rgba(0,0,0,0.02)", borderRadius: 8, padding: "10px 0" },
   pairNum: { fontFamily: "'Space Mono', monospace", fontSize: 20, fontWeight: 700 },
   pairLabel: { fontSize: 10, color: INK_SOFT, marginTop: 2 },
+  toggleRow: { display: "flex", gap: 6, marginBottom: 10 },
+  toggleBtn: {
+    flex: 1, padding: "8px 0", borderRadius: 999, border: `1px solid ${RULE}`,
+    background: "#fff", fontSize: 12.5, fontWeight: 600, color: INK_SOFT,
+  },
+  toggleBtnActive: { background: ACCENT, borderColor: ACCENT, color: "#fff" },
+  periodCaption: { fontSize: 11.5, color: INK_SOFT, fontStyle: "italic", textAlign: "center", marginBottom: 8 },
+  compGrid: { display: "flex", flexDirection: "column", gap: 8 },
+  compCard: { background: "rgba(255,255,255,0.55)", border: `1px solid ${RULE}`, borderRadius: 10, padding: "10px 12px" },
+  compHead: { display: "flex", alignItems: "center", gap: 6, marginBottom: 4 },
+  compArrow: { marginLeft: "auto", fontSize: 13, color: ACCENT, fontWeight: 700 },
+  compLine: { fontSize: 12.5, color: INK, fontFamily: "'Space Mono', monospace" },
+  compLineSub: { fontSize: 11.5, color: INK_SOFT, fontFamily: "'Space Mono', monospace", marginTop: 3 },
 };
