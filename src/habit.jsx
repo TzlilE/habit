@@ -428,7 +428,13 @@ function DaySummary({ date, entries, onOpenCell }) {
     if (cat.shape === "multi-detail") {
       text = `${es.length} \u00d7 \u2014 avg craving ${avg(es.map((e) => e.craving))}, enjoyment ${avg(es.map((e) => e.enjoyment))}`;
     } else if (cat.shape === "multi-food") {
-      text = es.map((e) => e.description).filter(Boolean).join(", ") || `${es.length} meal(s)`;
+      const names = es.map((e) => e.description).filter(Boolean).join(", ") || `${es.length} meal(s)`;
+      const totalCal = es.reduce((sum, e) => sum + (typeof e.calories === "number" ? e.calories : 0), 0);
+      const totalProtein = es.reduce((sum, e) => sum + (typeof e.protein === "number" ? e.protein : 0), 0);
+      const parts = [];
+      if (totalCal > 0) parts.push(`${totalCal} kcal`);
+      if (totalProtein > 0) parts.push(`${totalProtein}g protein`);
+      text = parts.length ? `${names} · ${parts.join(" · ")}` : names;
     } else if (cat.shape === "multi-count") {
       text = `${es.length} cup${es.length > 1 ? "s" : ""}`;
     } else if (cat.shape === "daily-value") {
@@ -601,6 +607,8 @@ function CigaretteForm({ date, cat, list, onAdd, onRemove }) {
 function FoodForm({ date, cat, list, onAdd, onRemove }) {
   const [desc, setDesc] = useState("");
   const [mealType, setMealType] = useState(MEAL_TYPES[0]);
+  const [calories, setCalories] = useState("");
+  const [protein, setProtein] = useState("");
   return (
     <div>
       <label style={mStyles.label}>Meal</label>
@@ -611,14 +619,50 @@ function FoodForm({ date, cat, list, onAdd, onRemove }) {
           <button key={t} style={mStyles.pill(mealType === t, cat.color)} onClick={() => setMealType(t)}>{t}</button>
         ))}
       </div>
+      <label style={mStyles.label}>Calories (optional)</label>
+      <input
+        style={mStyles.input}
+        type="number"
+        inputMode="numeric"
+        placeholder="e.g. 450"
+        value={calories}
+        onChange={(e) => setCalories(e.target.value)}
+      />
+      <label style={mStyles.label}>Protein, g (optional)</label>
+      <input
+        style={mStyles.input}
+        type="number"
+        inputMode="numeric"
+        placeholder="e.g. 30"
+        value={protein}
+        onChange={(e) => setProtein(e.target.value)}
+      />
       <button
         style={mStyles.primaryBtn(cat.color)}
         disabled={!desc.trim()}
-        onClick={() => { if (desc.trim()) { onAdd({ date, categoryId: cat.id, description: desc.trim(), mealType }); setDesc(""); } }}
+        onClick={() => {
+          if (desc.trim()) {
+            onAdd({
+              date,
+              categoryId: cat.id,
+              description: desc.trim(),
+              mealType,
+              calories: calories === "" ? null : parseFloat(calories),
+              protein: protein === "" ? null : parseFloat(protein),
+            });
+            setDesc("");
+            setCalories("");
+            setProtein("");
+          }
+        }}
       >
         <Plus size={15} /> Add meal
       </button>
-      <EntryList list={list} onRemove={onRemove} render={(e) => `${e.mealType}: ${e.description}`} />
+      <EntryList
+        list={list}
+        onRemove={onRemove}
+        render={(e) => `${e.mealType}: ${e.description}${e.calories ? ` · ${e.calories} kcal` : ""}${e.protein ? ` · ${e.protein}g protein` : ""}`}
+      />
     </div>
   );
 }
