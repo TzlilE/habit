@@ -558,6 +558,7 @@ function CigaretteForm({ date, cat, list, onAdd, onRemove }) {
   const [hour, setHour] = useState(nowHHMM());
   const [craving, setCraving] = useState(2);
   const [enjoyment, setEnjoyment] = useState(2);
+  const [note, setNote] = useState("");
   return (
     <div>
       <label style={mStyles.label}>Time</label>
@@ -574,10 +575,24 @@ function CigaretteForm({ date, cat, list, onAdd, onRemove }) {
           <button key={n} style={mStyles.scaleBtn(enjoyment === n, cat.color)} onClick={() => setEnjoyment(n)}>{n}</button>
         ))}
       </div>
-      <button style={mStyles.primaryBtn(cat.color)} onClick={() => onAdd({ date, categoryId: cat.id, hour, craving, enjoyment })}>
+      <label style={mStyles.label}>Why? (optional)</label>
+      <input
+        style={mStyles.input}
+        placeholder="in the car, with friends, morning coffee..."
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+      />
+      <button
+        style={mStyles.primaryBtn(cat.color)}
+        onClick={() => { onAdd({ date, categoryId: cat.id, hour, craving, enjoyment, note: note.trim() }); setNote(""); }}
+      >
         <Plus size={15} /> Add cigarette
       </button>
-      <EntryList list={list} onRemove={onRemove} render={(e) => `${e.hour || "--:--"} \u00b7 craving ${e.craving} \u00b7 enjoyed ${e.enjoyment}`} />
+      <EntryList
+        list={list}
+        onRemove={onRemove}
+        render={(e) => `${e.hour || "--:--"} \u00b7 craving ${e.craving} \u00b7 enjoyed ${e.enjoyment}${e.note ? ` \u00b7 ${e.note}` : ""}`}
+      />
     </div>
   );
 }
