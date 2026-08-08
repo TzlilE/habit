@@ -17,21 +17,13 @@ const ACCENT = "#6B4C57";
 
 const CATEGORIES = [
   { id: "cigarette", name: "Cigarette", short: "Cig", icon: "\u{1F6AC}", color: "#B84B32", shape: "multi-detail" },
-  { id: "water", name: "Water", short: "H\u2082O", icon: "\u{1F4A7}", color: "#2E8C94", shape: "water-counter", unit: "ml" },
-  { id: "food", name: "Food", short: "Food", icon: "\u{1F37D}\uFE0F", color: "#C98A2B", shape: "multi-food" },
   { id: "coffee", name: "Coffee", short: "Cof", icon: "\u2615", color: "#8A5A34", shape: "multi-count" },
   { id: "workout", name: "Workout", short: "Move", icon: "\u{1F3CB}\uFE0F", color: "#3E8B5C", shape: "daily-bool-type" },
   { id: "books", name: "Reading", short: "Read", icon: "\u{1F4D6}", color: "#8C4E8A", shape: "daily-bool" },
   { id: "meditation", name: "Meditation", short: "Med", icon: "\u{1F9D8}", color: "#5B4E9C", shape: "daily-bool" },
-  { id: "walk", name: "Walk", short: "Walk", icon: "\u{1F6B6}", color: "#7A8B3E", shape: "daily-value", unit: "steps" },
-  { id: "sleep", name: "Sleep", short: "Sleep", icon: "\u{1F634}", color: "#3E6B9C", shape: "daily-value", unit: "h" },
 ];
 
-const WATER_GOAL_ML = 2100;
-const WATER_STEP_ML = 250;
-
 const WORKOUT_TYPES = ["Pilates", "Walking", "Running", "Strength", "Other"];
-const MEAL_TYPES = ["Breakfast", "Lunch", "Dinner", "Snack"];
 const CIGARETTE_AMOUNTS = [{ label: "Whole", value: 1 }, { label: "Half", value: 0.5 }];
 const WEEKDAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
 
@@ -117,10 +109,10 @@ function dayEntries(entries, date, categoryId) {
 function fillLevel(entries, date, cat) {
   const es = dayEntries(entries, date, cat.id);
   if (es.length === 0) return 0;
-  if (cat.shape === "multi-detail" || cat.shape === "multi-food" || cat.shape === "multi-count") {
+  if (cat.shape === "multi-detail" || cat.shape === "multi-count") {
     return Math.min(1, 0.4 + es.length * 0.22);
   }
-  // daily-value, daily-bool, daily-bool-type, water-counter: presence only
+  // daily-bool, daily-bool-type: presence only
   return 1;
 }
 
@@ -135,10 +127,6 @@ function rollupFor(cat, entries, days) {
   }
   if (cat.shape.startsWith("multi")) {
     return { count: es.length };
-  }
-  if (cat.shape === "daily-value" || cat.shape === "water-counter") {
-    const vals = es.map((e) => e.value).filter((v) => typeof v === "number");
-    return { avg: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null };
   }
   return { daysDone: new Set(es.map((e) => e.date)).size };
 }
@@ -629,18 +617,8 @@ function DaySummary({ date, entries, onOpenCell }) {
     let text;
     if (cat.shape === "multi-detail") {
       text = `${es.length} \u00d7 \u2014 avg craving ${avg(es.map((e) => e.craving))}, enjoyment ${avg(es.map((e) => e.enjoyment))}`;
-    } else if (cat.shape === "multi-food") {
-      const names = es.map((e) => e.description).filter(Boolean).join(", ") || `${es.length} meal(s)`;
-      const totalCal = es.reduce((sum, e) => sum + (typeof e.calories === "number" ? e.calories : 0), 0);
-      const totalProtein = es.reduce((sum, e) => sum + (typeof e.protein === "number" ? e.protein : 0), 0);
-      const parts = [];
-      if (totalCal > 0) parts.push(`${totalCal} kcal`);
-      if (totalProtein > 0) parts.push(`${totalProtein}g protein`);
-      text = parts.length ? `${names} · ${parts.join(" · ")}` : names;
     } else if (cat.shape === "multi-count") {
       text = `${es.length} cup${es.length > 1 ? "s" : ""}`;
-    } else if (cat.shape === "daily-value" || cat.shape === "water-counter") {
-      text = `${es[0].value} ${cat.unit}`;
     } else if (cat.shape === "daily-bool-type") {
       text = es[0].workoutType || "done";
     } else {
@@ -748,17 +726,8 @@ function EntryModal({ date, categoryId, entries, onClose, onAdd, onRemove, onUps
         {cat.shape === "multi-detail" && (
           <CigaretteForm date={date} cat={cat} list={dayList} allEntries={entries} onAdd={onAdd} onRemove={onRemove} />
         )}
-        {cat.shape === "multi-food" && (
-          <FoodForm date={date} cat={cat} list={dayList} allEntries={entries} onAdd={onAdd} onRemove={onRemove} />
-        )}
         {cat.shape === "multi-count" && (
           <CountForm date={date} cat={cat} list={dayList} onAdd={onAdd} onRemove={onRemove} />
-        )}
-        {cat.shape === "daily-value" && (
-          <ValueForm date={date} cat={cat} list={dayList} onSave={onUpsertDaily} onClear={onClearDaily} onClose={onClose} />
-        )}
-        {cat.shape === "water-counter" && (
-          <WaterCounterForm date={date} cat={cat} list={dayList} onSave={onUpsertDaily} onClear={onClearDaily} />
         )}
         {cat.shape === "daily-bool-type" && (
           <WorkoutForm date={date} cat={cat} list={dayList} onSave={onUpsertDaily} onClear={onClearDaily} onClose={onClose} />
@@ -958,127 +927,6 @@ function CigaretteForm({ date, cat, list, allEntries, onAdd, onRemove }) {
   );
 }
 
-/* --- Food form --- */
-function FoodForm({ date, cat, list, allEntries, onAdd, onRemove }) {
-  const [desc, setDesc] = useState("");
-  const [mealType, setMealType] = useState(MEAL_TYPES[0]);
-  const [calories, setCalories] = useState("");
-  const [protein, setProtein] = useState("");
-  const [showSuggestions, setShowSuggestions] = useState(false);
-
-  // Past meals for this category, most recent first, deduped by description.
-  const history = useMemo(() => {
-    const seen = new Set();
-    const out = [];
-    for (let i = allEntries.length - 1; i >= 0; i--) {
-      const e = allEntries[i];
-      if (e.categoryId !== cat.id || !e.description) continue;
-      const key = e.description.trim().toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(e);
-    }
-    return out;
-  }, [allEntries, cat.id]);
-
-  const suggestions = useMemo(() => {
-    const q = desc.trim().toLowerCase();
-    if (!q) return [];
-    return history.filter((e) => e.description.toLowerCase().includes(q)).slice(0, 6);
-  }, [desc, history]);
-
-  const pickSuggestion = (e) => {
-    setDesc(e.description);
-    setMealType(e.mealType || MEAL_TYPES[0]);
-    setShowSuggestions(false);
-  };
-
-  return (
-    <div>
-      <label style={mStyles.label}>Meal</label>
-      <div style={{ position: "relative" }}>
-        <input
-          style={mStyles.input}
-          placeholder="what did you eat?"
-          value={desc}
-          onChange={(e) => { setDesc(e.target.value); setShowSuggestions(true); }}
-          onFocus={() => setShowSuggestions(true)}
-          onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-        />
-        {showSuggestions && suggestions.length > 0 && (
-          <div style={mStyles.suggestBox}>
-            {suggestions.map((s, i) => (
-              <button
-                key={s.id}
-                type="button"
-                style={{
-                  ...mStyles.suggestItem,
-                  ...(i === suggestions.length - 1 ? { borderBottom: "none" } : {}),
-                }}
-                onMouseDown={(ev) => ev.preventDefault()}
-                onClick={() => pickSuggestion(s)}
-              >
-                <span style={mStyles.suggestDesc}>{s.description}</span>
-                <span style={mStyles.suggestMeta}>{s.mealType}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-      <label style={mStyles.label}>Type</label>
-      <div style={mStyles.pillRow}>
-        {MEAL_TYPES.map((t) => (
-          <button key={t} style={mStyles.pill(mealType === t, cat.color)} onClick={() => setMealType(t)}>{t}</button>
-        ))}
-      </div>
-      <label style={mStyles.label}>Calories (optional)</label>
-      <input
-        style={mStyles.input}
-        type="number"
-        inputMode="numeric"
-        placeholder="e.g. 450"
-        value={calories}
-        onChange={(e) => setCalories(e.target.value)}
-      />
-      <label style={mStyles.label}>Protein, g (optional)</label>
-      <input
-        style={mStyles.input}
-        type="number"
-        inputMode="numeric"
-        placeholder="e.g. 30"
-        value={protein}
-        onChange={(e) => setProtein(e.target.value)}
-      />
-      <button
-        style={mStyles.primaryBtn(cat.color)}
-        disabled={!desc.trim()}
-        onClick={() => {
-          if (desc.trim()) {
-            onAdd({
-              date,
-              categoryId: cat.id,
-              description: desc.trim(),
-              mealType,
-              calories: calories === "" ? null : parseFloat(calories),
-              protein: protein === "" ? null : parseFloat(protein),
-            });
-            setDesc("");
-            setCalories("");
-            setProtein("");
-          }
-        }}
-      >
-        <Plus size={15} /> Add meal
-      </button>
-      <EntryList
-        list={list}
-        onRemove={onRemove}
-        render={(e) => `${e.mealType}: ${e.description}${e.calories ? ` · ${e.calories} kcal` : ""}${e.protein ? ` · ${e.protein}g protein` : ""}`}
-      />
-    </div>
-  );
-}
-
 /* --- Coffee (simple count) form --- */
 function CountForm({ date, cat, list, onAdd, onRemove }) {
   const [hour, setHour] = useState(nowHHMM());
@@ -1093,92 +941,6 @@ function CountForm({ date, cat, list, onAdd, onRemove }) {
     </div>
   );
 }
-
-/* --- Daily numeric value form (walk / sleep) --- */
-function ValueForm({ date, cat, list, onSave, onClear, onClose }) {
-  const existing = list[0];
-  const [val, setVal] = useState(existing ? String(existing.value) : "");
-  return (
-    <div>
-      <label style={mStyles.label}>{cat.name} ({cat.unit})</label>
-      <input
-        style={mStyles.input}
-        type="number"
-        inputMode="decimal"
-        placeholder={`e.g. ${cat.unit === "steps" ? "6500" : "7.5"}`}
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-      />
-      <button
-        style={mStyles.primaryBtn(cat.color)}
-        disabled={val === ""}
-        onClick={() => { onSave(date, cat.id, { value: parseFloat(val) }); onClose(); }}
-      >
-        Save {cat.name.toLowerCase()}
-      </button>
-      {existing && (
-        <button style={mStyles.secondaryBtn} onClick={() => { onClear(date, cat.id); onClose(); }}>
-          Clear today&rsquo;s entry
-        </button>
-      )}
-    </div>
-  );
-}
-
-/* --- Water tap counter --- */
-function WaterCounterForm({ date, cat, list, onSave, onClear }) {
-  const existing = list[0];
-  const total = existing ? existing.value : 0;
-
-  const adjust = (delta) => {
-    const next = Math.max(0, total + delta);
-    if (next === 0) {
-      onClear(date, cat.id);
-    } else {
-      onSave(date, cat.id, { value: next });
-    }
-  };
-
-  return (
-    <div>
-      <div style={wStyles.wrap}>
-        <button
-          style={{ ...wStyles.stepBtn(cat.color), ...(total <= 0 ? wStyles.stepBtnDisabled : {}) }}
-          onClick={() => adjust(-WATER_STEP_ML)}
-          disabled={total <= 0}
-          aria-label="Remove 250 ml"
-        >
-          &minus;
-        </button>
-        <div style={wStyles.readout}>
-          <div style={wStyles.total}>{total} ml</div>
-          <div style={wStyles.goal}>/ {WATER_GOAL_ML} ml</div>
-        </div>
-        <button
-          style={wStyles.stepBtn(cat.color)}
-          onClick={() => adjust(WATER_STEP_ML)}
-          aria-label="Add 250 ml"
-        >
-          +
-        </button>
-      </div>
-      <p style={wStyles.hint}>Each tap adjusts by {WATER_STEP_ML} ml and saves right away.</p>
-    </div>
-  );
-}
-const wStyles = {
-  wrap: { display: "flex", alignItems: "center", justifyContent: "center", gap: 22, padding: "10px 0 6px" },
-  stepBtn: (color) => ({
-    width: 48, height: 48, borderRadius: "50%", border: "none",
-    background: color, color: "#fff", fontSize: 26, fontWeight: 700,
-    display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1,
-  }),
-  stepBtnDisabled: { opacity: 0.35 },
-  readout: { textAlign: "center", minWidth: 110 },
-  total: { fontFamily: "'Space Mono', monospace", fontSize: 26, fontWeight: 700 },
-  goal: { fontSize: 12.5, color: INK_SOFT, marginTop: 2 },
-  hint: { fontSize: 11.5, color: INK_SOFT, fontStyle: "italic", textAlign: "center", marginTop: 10 },
-};
 
 /* --- Workout (bool + type) --- */
 function WorkoutForm({ date, cat, list, onSave, onClear, onClose }) {
@@ -1204,7 +966,7 @@ function WorkoutForm({ date, cat, list, onSave, onClear, onClose }) {
   );
 }
 
-/* --- Simple daily bool (books / meditation / kindness) --- */
+/* --- Simple daily bool (books / meditation) --- */
 function BoolForm({ date, cat, list, onSave, onClear, onClose }) {
   const done = list.length > 0;
   return (
@@ -1379,7 +1141,6 @@ function InsightsView({
   const periodLabel = period === "week" ? "week" : "month";
 
   const boolCats = CATEGORIES.filter((c) => c.shape === "daily-bool" || c.shape === "daily-bool-type");
-  const valueCats = CATEGORIES.filter((c) => c.shape === "daily-value" || c.shape === "water-counter");
   const multiCats = CATEGORIES.filter((c) => c.shape.startsWith("multi"));
 
   return (
@@ -1409,16 +1170,6 @@ function InsightsView({
       </div>
 
       <WeekReflection weekStart={sundayOf(now)} weeklyNotes={weeklyNotes} onSave={onSaveWeekNote} />
-
-      <SectionLabel>Daily numbers, last 14 days</SectionLabel>
-      {valueCats.map((cat) => (
-        <MiniChart key={cat.id} cat={cat}
-          data={last14.map((d) => ({
-            day: d.slice(5),
-            v: (dayEntries(entries, d, cat.id)[0]?.value) || 0,
-          }))}
-        />
-      ))}
 
       <SectionLabel>Frequency, last 14 days</SectionLabel>
       {multiCats.map((cat) => (
@@ -1480,10 +1231,6 @@ function ComparisonCard({ cat, cur, prev, periodLabel }) {
     curPrimary = cur.count;
     prevPrimary = prev.count;
     line = `${cur.count} this ${periodLabel} vs ${prev.count} last ${periodLabel}`;
-  } else if (cat.shape === "daily-value" || cat.shape === "water-counter") {
-    curPrimary = cur.avg;
-    prevPrimary = prev.avg;
-    line = `${fmtNum(cur.avg)} avg ${cat.unit} this ${periodLabel} vs ${fmtNum(prev.avg)} last ${periodLabel}`;
   } else {
     curPrimary = cur.daysDone;
     prevPrimary = prev.daysDone;
